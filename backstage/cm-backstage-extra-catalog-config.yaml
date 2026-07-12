@@ -1,0 +1,21 @@
+apiVersion: v1
+data:
+  app-config.extra.yaml: "catalog:\n  locations:\n  - type: file\n    target: /app/catalog-entities/org.yaml\n\
+    \    rules:\n    - allow:\n      - Group\n  - type: file\n    target: /app/templates/create-openchoreo-project/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-componenttype/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-resourcetype/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-trait/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-workflow/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-environment/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-namespace/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-deploymentpipeline/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-clustercomponenttype/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-clusterresourcetype/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-clustertrait/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-openchoreo-clusterworkflow/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/templates/create-api-proxy/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n"
+kind: ConfigMap
+metadata:
+  name: backstage-extra-catalog-config
+  namespace: openchoreo-control-plane

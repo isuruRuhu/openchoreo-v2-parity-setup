@@ -1,0 +1,25 @@
+{
+  "spec": {
+    "parameters": {
+      "openAPIV3Schema": {
+        "properties": {
+          "concurrencyPolicy": {
+            "enum": ["Allow", "Forbid", "Replace"]
+          },
+          "restartPolicy": {
+            "enum": ["Never", "OnFailure"]
+          }
+        }
+      }
+    },
+    "environmentConfigs": {
+      "openAPIV3Schema": {
+        "properties": {
+          "schedule": {
+            "pattern": "(?:^@(annually|yearly|monthly|weekly|daily|hourly)$)|(?:^(\\*|\\d+(-\\d+)?)(/\\d+)?(,(\\*|\\d+(-\\d+)?)(/\\d+)?)*( +(\\*|\\d+(-\\d+)?)(/\\d+)?(,(\\*|\\d+(-\\d+)?)(/\\d+)?)*){4}$)"
+          }
+        }
+      }
+    }
+  }
+}

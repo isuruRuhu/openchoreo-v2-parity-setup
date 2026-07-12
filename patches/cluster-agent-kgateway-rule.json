@@ -1,0 +1,11 @@
+[
+  {
+    "op": "add",
+    "path": "/rules/-",
+    "value": {
+      "apiGroups": ["gateway.kgateway.dev"],
+      "resources": ["backendconfigpolicies", "trafficpolicies", "gatewayextensions"],
+      "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]
+    }
+  }
+]

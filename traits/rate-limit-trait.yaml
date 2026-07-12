@@ -1,0 +1,82 @@
+# rate-limit ClusterTrait — reusable local (per-route) rate limiting for ANY CT's external HTTP endpoints.
+#
+# WHY A TRAIT (not just a CT param): the api-proxy CT carries rateLimit as a first-class parameter
+# (validated). But `service` / `web-application` have no rate-limit surface — they'd need their CT
+# re-authored. This trait gives any HTTP-serving component a self-service token-bucket limit, the same
+# way jwt-auth gave them endpoint JWT. The api-proxy CT param stays for backwards-compat; this trait is
+# the cross-CT path. (Trait-split 2026-06-04, mirrors jwt-auth-trait.yaml.)
+#
+# HOW IT TARGETS THE RIGHT ROUTES: component HTTPRoutes get generated names (oc_generate_name) a trait
+# template can't predict, so the emitted TrafficPolicy binds by kgateway `targetSelectors.matchLabels`
+# on `openchoreo.dev/component-uid` + `endpoint-visibility=external` — every external route the
+# component owns. kgateway MERGES multiple TrafficPolicies on one route (probe 2026-06-04: rate-limit +
+# cors co-attached, both took effect), so this composes with cors/mediation/jwt-auth on the same route.
+#
+# EMITS (gated on environmentConfigs.enabled): one TrafficPolicy carrying spec.rateLimit.local.tokenBucket.
+# Requires the A7 cluster-agent RBAC (trafficpolicies) — same prereq as the api-proxy CT.
+#
+# Local = per-Envoy-instance token bucket (NOT a global quota across replicas — that needs an external
+# Envoy RLS, F43). Semantics: maxTokens = burst cap; tokensPerFill / fillInterval = sustained refill
+# rate. For a true "N requests per minute", set BOTH maxTokens AND tokensPerFill to N with fillInterval=1m.
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterTrait
+metadata:
+  name: rate-limit
+  annotations:
+    openchoreo.dev/description: "Local token-bucket rate limit on a component's external HTTP endpoints (label-selected TrafficPolicy). Reusable across any CT."
+spec:
+  parameters:
+    openAPIV3Schema:
+      type: object
+      properties:
+        maxTokens:
+          type: integer
+          default: 100
+          description: "Bucket capacity — the max burst allowed at one instant."
+        tokensPerFill:
+          type: integer
+          default: 100
+          description: "Tokens added each fillInterval (capped at maxTokens). With maxTokens, sets the sustained rate."
+        fillInterval:
+          type: string
+          default: "1s"
+          description: "Refill period, e.g. 1s, 1m. tokensPerFill per fillInterval = sustained rate."
+
+  # Per-environment on/off. Defaults true → attaching the trait enforces the limit everywhere.
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: "When false, no rate-limit policy is emitted in that environment."
+
+  creates:
+    # TrafficPolicy bound by LABEL SELECTOR to every external HTTPRoute this component owns.
+    - includeWhen: ${environmentConfigs.enabled}
+      targetPlane: dataplane
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: TrafficPolicy
+        metadata:
+          name: ${metadata.name}-${trait.instanceName}-ratelimit-policy
+          namespace: ${metadata.namespace}
+          labels:
+            openchoreo.dev/component-uid: ${metadata.componentUID}
+            openchoreo.dev/environment-uid: ${metadata.environmentUID}
+            openchoreo.dev/project-uid: ${metadata.projectUID}
+        spec:
+          targetSelectors:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              matchLabels:
+                openchoreo.dev/component-uid: ${metadata.componentUID}
+                openchoreo.dev/endpoint-visibility: external
+          # Scalar params (defaults always applied) → direct substitution, no has()/size() guard needed.
+          rateLimit:
+            local:
+              tokenBucket:
+                maxTokens: ${parameters.maxTokens}
+                tokensPerFill: ${parameters.tokensPerFill}
+                fillInterval: ${parameters.fillInterval}

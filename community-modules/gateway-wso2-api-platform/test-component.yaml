@@ -1,0 +1,51 @@
+# Throwaway validation component used 2026-06-05 to prove the api-management trait end-to-end on the
+# POC. Deleted after evidence capture. Shown here with ALL policies enabled for reference; during
+# validation policies were flipped on one at a time (default-CORS -> rate-limit+headers -> jwtAuth).
+# Requires `api-management` in the target CT's allowedTraits (see README "Enable on a ComponentType").
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: wso2apim-test-greeter
+  namespace: default
+spec:
+  owner:
+    projectName: default
+  autoDeploy: true
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/service
+  traits:
+    - name: api-management
+      instanceName: greeter-api
+      kind: ClusterTrait
+      parameters:
+        jwtAuth:
+          enabled: true
+        rateLimit:
+          enabled: true
+          limits:
+            - requests: 5
+              duration: "1m"
+        addHeaders:
+          enabled: true
+          responseHeaders:
+            - name: X-Powered-By
+              value: OpenChoreo-WSO2
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: wso2apim-test-greeter-workload
+  namespace: default
+spec:
+  owner:
+    projectName: default
+    componentName: wso2apim-test-greeter
+  endpoints:
+    http:
+      type: HTTP
+      port: 9090
+      visibility: [external]
+  container:
+    image: "ghcr.io/openchoreo/samples/greeter-service:latest"
+    args: ["--port", "9090"]

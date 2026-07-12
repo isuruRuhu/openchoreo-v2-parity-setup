@@ -1,0 +1,151 @@
+# V2 "Manual Task" component type.
+# A run-to-completion job triggered ON DEMAND (never on a schedule). Modeled as a SUSPENDED
+# CronJob with a sentinel schedule so the controller never auto-fires it. To run it:
+#
+#   kubectl create job --from=cronjob/<component-name> <run-name> -n <cell-namespace>
+#
+# A console "Run" button would call exactly that. (workloadType: job also exists in V3 but a Job is
+# immutable once created, so a suspended CronJob gives repeatable on-demand triggering — the V2 UX.)
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterComponentType
+metadata:
+  name: manual-task
+  annotations:
+    openchoreo.dev/description: "A task that runs to completion on demand (operator-triggered, no schedule)"
+spec:
+  workloadType: cronjob
+
+  allowedWorkflows:
+    - kind: ClusterWorkflow
+      name: paketo-buildpacks-builder
+    - kind: ClusterWorkflow
+      name: gcp-buildpacks-builder
+    - kind: ClusterWorkflow
+      name: dockerfile-builder
+    - kind: ClusterWorkflow
+      name: ballerina-buildpack-builder
+
+  allowedTraits: []
+
+  validations:
+    - rule: "${size(workload.endpoints) == 0}"
+      message: "Manual Task components must not expose endpoints."
+
+  parameters:
+    openAPIV3Schema:
+      type: object
+      properties:
+        backoffLimit: { type: integer, default: 3 }
+        activeDeadlineSeconds: { type: integer, default: 3600 }
+        restartPolicy: { type: string, default: OnFailure }
+        ttlSecondsAfterFinished: { type: integer, default: 86400 }
+        successfulJobsHistoryLimit: { type: integer, default: 3 }
+        failedJobsHistoryLimit: { type: integer, default: 1 }
+
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      $defs:
+        ResourceQuantity:
+          type: object
+          default: {}
+          properties:
+            cpu: { type: string, default: "100m" }
+            memory: { type: string, default: "128Mi" }
+        ResourceRequirements:
+          type: object
+          properties:
+            requests: { $ref: "#/$defs/ResourceQuantity" }
+            limits: { $ref: "#/$defs/ResourceQuantity" }
+          default: {}
+      properties:
+        resources: { $ref: "#/$defs/ResourceRequirements" }
+        imagePullPolicy:
+          type: string
+          default: IfNotPresent
+          enum: [Always, IfNotPresent, Never]
+
+  resources:
+    - id: cronjob
+      template:
+        apiVersion: batch/v1
+        kind: CronJob
+        metadata:
+          name: ${metadata.name}
+          namespace: ${metadata.namespace}
+          labels: ${metadata.labels}
+        spec:
+          # Suspended + sentinel schedule (Feb 31 never occurs) => never auto-fires.
+          suspend: true
+          schedule: "0 0 31 2 *"
+          concurrencyPolicy: Forbid
+          successfulJobsHistoryLimit: ${parameters.successfulJobsHistoryLimit}
+          failedJobsHistoryLimit: ${parameters.failedJobsHistoryLimit}
+          jobTemplate:
+            metadata:
+              labels: ${metadata.labels}
+            spec:
+              backoffLimit: ${parameters.backoffLimit}
+              activeDeadlineSeconds: ${parameters.activeDeadlineSeconds}
+              ttlSecondsAfterFinished: ${parameters.ttlSecondsAfterFinished}
+              template:
+                metadata:
+                  labels: ${metadata.podSelectors}
+                spec:
+                  restartPolicy: ${parameters.restartPolicy}
+                  containers:
+                    - name: main
+                      image: ${workload.container.image}
+                      imagePullPolicy: ${environmentConfigs.imagePullPolicy}
+                      command: |
+                        ${has(workload.container.command) ? workload.container.command : oc_omit()}
+                      args: |
+                        ${has(workload.container.args) ? workload.container.args : oc_omit()}
+                      resources:
+                        requests:
+                          cpu: ${environmentConfigs.resources.requests.cpu}
+                          memory: ${environmentConfigs.resources.requests.memory}
+                        limits:
+                          cpu: ${environmentConfigs.resources.limits.cpu}
+                          memory: ${environmentConfigs.resources.limits.memory}
+                      env: ${dependencies.toContainerEnvs()}
+                      envFrom: ${configurations.toContainerEnvFrom()}
+                      volumeMounts: ${configurations.toContainerVolumeMounts() + dependencies.toContainerVolumeMounts()}
+                  volumes: ${configurations.toVolumes() + dependencies.toVolumes()}
+
+    - id: env-config
+      forEach: ${configurations.toConfigEnvsByContainer()}
+      var: envConfig
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${envConfig.resourceName}
+          namespace: ${metadata.namespace}
+        data: |
+          ${envConfig.envs.transformMapEntry(index, env, {env.name: env.value})}
+    - id: secret-env-external
+      forEach: ${configurations.toSecretEnvsByContainer()}
+      var: secretEnv
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${secretEnv.resourceName}
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: ${dataplane.secretStore}
+            kind: ClusterSecretStore
+          target:
+            name: ${secretEnv.resourceName}
+            creationPolicy: Owner
+          data: |
+            ${secretEnv.envs.map(secret, {
+              "secretKey": secret.name,
+              "remoteRef": {
+                "key": secret.remoteRef.key,
+                ?"property": secret.remoteRef.?property
+              }
+            })}

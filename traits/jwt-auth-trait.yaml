@@ -1,0 +1,121 @@
+# jwt-auth ClusterTrait — reusable JWT enforcement for ANY CT's external HTTP endpoints.
+#
+# WHY A TRAIT (not just a CT param): the api-proxy CT already carries jwtAuth as a first-class
+# parameter (validated, works). But the `service` CT has ZERO parameters and no auth surface at all —
+# it only allows the `observability-alert-rule` trait. To give service (and other) components
+# self-service endpoint JWT WITHOUT re-authoring each CT, JWT is extracted into this additive trait.
+# The api-proxy CT param stays for backwards-compat; this trait is the cross-CT path. (Re-validation
+# 2026-06-02, criterion a.)
+#
+# HOW IT TARGETS THE RIGHT ROUTES: a component's HTTPRoutes get generated names
+# (oc_generate_name → e.g. `go-service-test-2-endpoint-1-32f39c47`) that a trait template cannot
+# predict. Instead of targetRefs-by-name, the emitted TrafficPolicy uses kgateway
+# `targetSelectors.matchLabels` to bind to every external HTTPRoute the component owns
+# (matched on `openchoreo.dev/component-uid` + `endpoint-visibility=external`). Proven to
+# Attach=True against a live service HTTPRoute on kgateway v2.2.1 (changelog row 4 probe).
+#
+# EMITS (both gated on environmentConfigs.enabled): GatewayExtension(JWT provider) +
+# TrafficPolicy(jwtAuth.extensionRef → that provider, bound by label selector). Requires the A7
+# cluster-agent RBAC (gatewayextensions + trafficpolicies) — same prereq as the api-proxy CT.
+# jwksInline MUST have x5c/x5t/x5t#S256 stripped (F47).
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterTrait
+metadata:
+  name: jwt-auth
+  annotations:
+    openchoreo.dev/description: "Enforce JWT auth on a component's external HTTP endpoints (GatewayExtension + label-selected TrafficPolicy). Reusable across any CT."
+spec:
+  parameters:
+    openAPIV3Schema:
+      type: object
+      required: [issuer, jwksInline]
+      properties:
+        issuer:
+          type: string
+          description: "Token issuer (iss), e.g. https://thunder.openchoreo.<ip>.nip.io"
+        audiences:
+          type: array
+          default: []
+          items: { type: string }
+        jwksInline:
+          type: string
+          description: "Raw JWKS JSON, x5c/x5t/x5t#S256 stripped (F47)"
+        forwardToken:
+          type: boolean
+          default: false
+          description: "Forward the bearer token upstream (F53 — default false)"
+        claimsToHeaders:
+          type: array
+          default: []
+          description: "Map verified JWT claims to upstream request headers"
+          items:
+            type: object
+            required: [name, header]
+            properties:
+              name: { type: string, description: "JWT claim name, e.g. sub" }
+              header: { type: string, description: "Header to copy it to, e.g. x-end-user-sub" }
+
+  # Per-environment on/off. A platform engineer can disable auth in, say, a dev env without
+  # detaching the trait. Defaults true → attaching the trait enables enforcement everywhere.
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: "When false, no auth policy is emitted in that environment."
+
+  creates:
+    # JWT provider. trait.instanceName keeps names unique when multiple jwt-auth instances attach.
+    - includeWhen: ${environmentConfigs.enabled}
+      targetPlane: dataplane
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: GatewayExtension
+        metadata:
+          name: ${metadata.name}-${trait.instanceName}-jwt
+          namespace: ${metadata.namespace}
+          labels:
+            openchoreo.dev/component-uid: ${metadata.componentUID}
+            openchoreo.dev/environment-uid: ${metadata.environmentUID}
+            openchoreo.dev/project-uid: ${metadata.projectUID}
+        spec:
+          type: JWT
+          jwt:
+            providers:
+              - name: trait-jwt
+                issuer: ${parameters.issuer}
+                # size()>0 guard, NOT just has(): audiences/claimsToHeaders are TOP-LEVEL trait params
+                # with default [], so OpenChoreo DOES apply the [] default (unlike nested sub-fields).
+                # A bare has() would render an empty array, which kgateway rejects (min 1 item).
+                audiences: "${has(parameters.audiences) && size(parameters.audiences) > 0 ? parameters.audiences : oc_omit()}"
+                forwardToken: ${parameters.forwardToken}
+                claimsToHeaders: "${has(parameters.claimsToHeaders) && size(parameters.claimsToHeaders) > 0 ? parameters.claimsToHeaders : oc_omit()}"
+                jwks:
+                  local:
+                    inline: ${parameters.jwksInline}
+
+    # TrafficPolicy bound by LABEL SELECTOR to every external HTTPRoute this component owns.
+    - includeWhen: ${environmentConfigs.enabled}
+      targetPlane: dataplane
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: TrafficPolicy
+        metadata:
+          name: ${metadata.name}-${trait.instanceName}-jwt-policy
+          namespace: ${metadata.namespace}
+          labels:
+            openchoreo.dev/component-uid: ${metadata.componentUID}
+            openchoreo.dev/environment-uid: ${metadata.environmentUID}
+            openchoreo.dev/project-uid: ${metadata.projectUID}
+        spec:
+          targetSelectors:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              matchLabels:
+                openchoreo.dev/component-uid: ${metadata.componentUID}
+                openchoreo.dev/endpoint-visibility: external
+          jwtAuth:
+            extensionRef:
+              name: ${metadata.name}-${trait.instanceName}-jwt

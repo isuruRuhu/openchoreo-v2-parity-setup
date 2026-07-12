@@ -1,0 +1,17 @@
+# Enables WebSocket upgrades through the data-plane gateway. Without this, kgateway rejects
+# `Connection: Upgrade` requests with 403, so V2 WebSocket components break after migration.
+# One per data-plane cluster. Source: upstream OpenChoreo sample
+# samples/from-image/echo-websocket-service (verified during Phase 0, findings.md F30-fix).
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: HTTPListenerPolicy
+metadata:
+  name: default-httplistenerpolicy
+  namespace: openchoreo-data-plane
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: gateway-default
+  upgradeConfig:
+    enabledUpgrades:
+      - websocket

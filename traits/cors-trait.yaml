@@ -1,0 +1,89 @@
+# cors ClusterTrait — reusable CORS for ANY CT's external HTTP endpoints.
+#
+# WHY A TRAIT (not just a CT param): the api-proxy CT carries cors as a first-class parameter
+# (validated). `service` / `web-application` have no CORS surface. This trait lets any HTTP-serving
+# component declare CORS without re-authoring its CT. The api-proxy CT param stays for backwards-compat;
+# this trait is the cross-CT path. (Trait-split 2026-06-04, mirrors jwt-auth-trait.yaml.)
+#
+# HOW IT TARGETS THE RIGHT ROUTES: emitted TrafficPolicy binds by kgateway `targetSelectors.matchLabels`
+# on `openchoreo.dev/component-uid` + `endpoint-visibility=external` (component HTTPRoute names are
+# generated and unpredictable). kgateway MERGES multiple TrafficPolicies on one route (probe 2026-06-04),
+# so this composes with rate-limit/mediation/jwt-auth.
+#
+# EMITS (gated on environmentConfigs.enabled): one TrafficPolicy carrying spec.cors. Requires the A7
+# cluster-agent RBAC (trafficpolicies). CORS is a BROWSER mechanism (not auth) — it tells browsers which
+# origins' JS may read responses; it does not block non-browser clients.
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterTrait
+metadata:
+  name: cors
+  annotations:
+    openchoreo.dev/description: "CORS on a component's external HTTP endpoints (label-selected TrafficPolicy). Reusable across any CT."
+spec:
+  parameters:
+    openAPIV3Schema:
+      type: object
+      properties:
+        allowOrigins:
+          type: array
+          default: []
+          items: { type: string }
+        allowMethods:
+          type: array
+          default: []
+          items: { type: string }
+        allowHeaders:
+          type: array
+          default: []
+          items: { type: string }
+        exposeHeaders:
+          type: array
+          default: []
+          items: { type: string }
+        allowCredentials:
+          type: boolean
+          default: false
+        maxAge:
+          type: integer
+          default: 0
+          description: "Preflight cache seconds. Omitted from the policy when 0."
+
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: "When false, no CORS policy is emitted in that environment."
+
+  creates:
+    - includeWhen: ${environmentConfigs.enabled}
+      targetPlane: dataplane
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: TrafficPolicy
+        metadata:
+          name: ${metadata.name}-${trait.instanceName}-cors-policy
+          namespace: ${metadata.namespace}
+          labels:
+            openchoreo.dev/component-uid: ${metadata.componentUID}
+            openchoreo.dev/environment-uid: ${metadata.environmentUID}
+            openchoreo.dev/project-uid: ${metadata.projectUID}
+        spec:
+          targetSelectors:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              matchLabels:
+                openchoreo.dev/component-uid: ${metadata.componentUID}
+                openchoreo.dev/endpoint-visibility: external
+          cors:
+            # Core arrays: top-level params, default [] always applied → emit directly (empty = deny-all,
+            # a valid state). allowHeaders should include `authorization` if the browser sends a JWT.
+            allowOrigins: "${parameters.allowOrigins}"
+            allowMethods: "${parameters.allowMethods}"
+            allowHeaders: "${parameters.allowHeaders}"
+            allowCredentials: ${parameters.allowCredentials}
+            # Optional fields — omit when empty/zero. Same guard shape the api-proxy CT uses for cors.
+            exposeHeaders: "${has(parameters.exposeHeaders) && size(parameters.exposeHeaders) > 0 ? parameters.exposeHeaders : oc_omit()}"
+            maxAge: "${has(parameters.maxAge) && parameters.maxAge > 0 ? parameters.maxAge : oc_omit()}"

@@ -1,0 +1,108 @@
+# autoscaler ClusterTrait — gives any Deployment-backed component (service / web-application / worker)
+# a real HorizontalPodAutoscaler. Closes the V2 DevOps→Scaling parity gap CD1.
+#
+# WHY A TRAIT (not a CT param): every Deployment CT (service/web-application/worker) exposes only a
+# STATIC `environmentConfigs.replicas` int. A migrated V2 component that used autoscaling (min/max
+# replicas + CPU/mem threshold) silently pins at N replicas and under-scales on load. None of the
+# built-in CTs emit an HPA, and no CT carries an autoscaling surface. A trait is the cross-CT path
+# (same model as jwt-auth/rate-limit) — author once, attach to all three Deployment CTs' allowedTraits.
+#
+# HOW IT TARGETS THE DEPLOYMENT: an HPA's scaleTargetRef is a NAME reference (HPA cannot select by
+# label). The Deployment that every Deployment-backed CT renders is named `${metadata.name}` (verified
+# on the live `service` CT: `Deployment.metadata.name: ${metadata.name}`). The trait template uses the
+# SAME `${metadata.name}` var, so scaleTargetRef.name == the rendered Deployment name. This name-join is
+# the join the whole trait hinges on — do not change the CT Deployment naming without updating this.
+#
+# EMITS (gated on environmentConfigs.enabled): one autoscaling/v2 HorizontalPodAutoscaler in the cell
+# namespace next to the Deployment (targetPlane: dataplane). Resource metric CPU always; memory only
+# when targetMemoryUtilizationPercentage is set (>0). Both via the `Utilization` averageUtilization
+# type, so they need container resource REQUESTS set (the service CT defaults requests.cpu=100m — OK;
+# memory metric additionally needs requests.memory, which the CTs default to 256Mi — OK).
+#
+# REPLICAS-THRASH CAVEAT (see findings F140): the Deployment CTs hard-write
+# `spec.replicas: ${environmentConfigs.replicas}` (default 1) on EVERY render. An HPA also owns
+# spec.replicas. Whether they fight was TESTED on the POC (2026-06-17) — see F140 for the verdict and
+# the migration-tool mitigation (set the CT's environmentConfigs.replicas == this trait's minReplicas
+# so re-renders are a no-op at the resting floor). The durable fix is an upstream CT edit to omit
+# spec.replicas when an HPA is attached.
+#
+# MIGRATION-MAPPING CAVEAT (request vs limit %, same spirit as F70): HPA
+# targetCPUUtilizationPercentage / targetMemoryUtilizationPercentage are "percent of the pod's
+# resource REQUEST". V2's scaling threshold (like F70 for alerts) is percent of the pod LIMIT. The
+# migration tool MUST convert V2 limit-percent thresholds to request-percent for the HPA.
+#
+# PREREQ: cluster-agent ClusterRole must grant autoscaling/horizontalpodautoscalers (confirmed present
+# on the POC 2026-06-17). This is a DIFFERENT RBAC line from the F131/A7 kgateway grant; same
+# Helm-fragility class — re-confirm after any data-plane helm upgrade.
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterTrait
+metadata:
+  name: autoscaler
+  annotations:
+    openchoreo.dev/description: "HorizontalPodAutoscaler (autoscaling/v2) for a Deployment-backed component — min/max replicas + CPU (and optional memory) utilization targets. Closes V2 DevOps→Scaling parity (CD1)."
+spec:
+  # All scaling knobs are PER-ENVIRONMENT (environmentConfigs), matching V2 where scaling was set per
+  # deployment/environment. Override per env via ReleaseBinding.spec.traitEnvironmentConfigs[instance].
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: "When false, no HPA is emitted in that environment (component falls back to the CT's static replicas)."
+        minReplicas:
+          type: integer
+          default: 1
+          minimum: 1
+          description: "HPA floor — the minimum replica count. Set the CT's environmentConfigs.replicas equal to this to avoid render thrash (F140)."
+        maxReplicas:
+          type: integer
+          default: 5
+          minimum: 1
+          description: "HPA ceiling — the maximum replica count. Must be >= minReplicas."
+        targetCPUUtilizationPercentage:
+          type: integer
+          default: 80
+          minimum: 1
+          maximum: 100
+          description: "Scale to keep average CPU at this percent of the pod's CPU REQUEST (not limit — convert V2 thresholds; see header + F70)."
+        targetMemoryUtilizationPercentage:
+          type: integer
+          default: 0
+          minimum: 0
+          maximum: 100
+          description: "Percent of the pod's memory REQUEST. 0 (default) = omit the memory metric entirely (CPU-only HPA)."
+
+  creates:
+    - includeWhen: ${environmentConfigs.enabled}
+      targetPlane: dataplane
+      template:
+        apiVersion: autoscaling/v2
+        kind: HorizontalPodAutoscaler
+        metadata:
+          name: ${metadata.name}-${trait.instanceName}-hpa
+          namespace: ${metadata.namespace}
+          labels:
+            openchoreo.dev/component-uid: ${metadata.componentUID}
+            openchoreo.dev/environment-uid: ${metadata.environmentUID}
+            openchoreo.dev/project-uid: ${metadata.projectUID}
+        spec:
+          # NAME-match to the Deployment the CT renders (it is named ${metadata.name}). HPA has no
+          # label-selector targeting — this name join is mandatory.
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: ${metadata.name}
+          minReplicas: ${environmentConfigs.minReplicas}
+          maxReplicas: ${environmentConfigs.maxReplicas}
+          metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: ${environmentConfigs.targetCPUUtilizationPercentage}
+            # Memory metric emitted ONLY when targetMemoryUtilizationPercentage > 0 (0 = CPU-only).
+            # Quoted scalar: the inline CEL map literal contains ':' which would break bare YAML.
+            - '${environmentConfigs.targetMemoryUtilizationPercentage > 0 ? {"type": "Resource", "resource": {"name": "memory", "target": {"type": "Utilization", "averageUtilization": environmentConfigs.targetMemoryUtilizationPercentage}}} : oc_omit()}'

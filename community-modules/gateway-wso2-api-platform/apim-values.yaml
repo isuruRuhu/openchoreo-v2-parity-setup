@@ -1,0 +1,55 @@
+# WSO2 API Manager 4.7.0 — all-in-one, POC-minimal values
+# Chart: wso2/wso2am-all-in-one 4.7.0-1 (helm.wso2.com)
+# Target: choreo-migration-poc-cluster, namespace wso2-apim
+#
+# POC simplifications (NOT for production):
+# - Embedded H2 databases from the public docker.io/wso2/wso2am:4.7.0 image
+#   (no external RDBMS; state is EPHEMERAL — an APIM pod restart resets gateways,
+#   tokens, APIs. Re-run the gateway registration + DCR steps after any restart.)
+# - Built-in wso2carbon.jks keystores (jksSecretName empty → chart skips the mount)
+# - admin/admin super-admin
+# - No Ingress / Gateway API exposure — portal access via kubectl port-forward;
+#   the WSO2 gateway controller connects in-cluster via the Service DNS.
+fullnameOverride: "wso2am"
+
+kubernetes:
+  gatewayAPI:
+    enabled: false
+  ingress:
+    management:
+      # With ingress + gatewayAPI both disabled this only feeds server.hostname in
+      # deployment.toml; localhost matches the port-forward origin for the portals.
+      hostname: "localhost"
+
+wso2:
+  apim:
+    configurations:
+      encryption:
+        # 32-byte AES-256 key, POC-only (chart refuses to render without one).
+        # Rotate to a real secret-managed key for any non-POC install.
+        key: "POCEncryptionKey1234567890abcdef"
+      adminUsername: "admin"
+      adminPassword: "admin"
+      security:
+        truststore:
+          # chart default is "" which NPEs the user.core OSGi bundle at startup;
+          # the image's built-in client-truststore.jks password is wso2carbon
+          password: "wso2carbon"
+      databases:
+        type: "h2"
+        jdbc:
+          driver: "org.h2.Driver"
+        apim_db:
+          url: "jdbc:h2:./repository/database/WSO2AM_DB;DB_CLOSE_ON_EXIT=FALSE"
+          username: "wso2carbon"
+          password: "wso2carbon"
+        shared_db:
+          url: "jdbc:h2:./repository/database/WSO2SHARED_DB;DB_CLOSE_ON_EXIT=FALSE"
+          username: "wso2carbon"
+          password: "wso2carbon"
+  deployment:
+    image:
+      registry: "docker.io"
+      repository: "wso2/wso2am"
+      tag: "4.7.0"
+      imagePullPolicy: "IfNotPresent"

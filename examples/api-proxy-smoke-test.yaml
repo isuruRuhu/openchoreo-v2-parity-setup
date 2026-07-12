@@ -1,0 +1,56 @@
+# Smoke test: proxies https://httpbin.org through the gateway using the api-proxy
+# component type — exercises the CT, the cluster-agent RBAC patch, and the gateway
+# policy chain in one shot, with no auth/rate-limit so nothing else is needed.
+#
+#   kubectl --context <ctx> apply -f examples/api-proxy-smoke-test.yaml
+#
+# Wait ~30s, then read the public URL from the release status:
+#
+#   kubectl --context <ctx> get releasebindings -n default \
+#     -l openchoreo.dev/component=httpbin-smoke \
+#     -o jsonpath='{.items[0].status.endpoints[0].externalURLs}'
+#
+# curl <that-url>/get should return httpbin's JSON echo (HTTP 200).
+# If instead the route never appears / curl gives 404, the most likely cause is the
+# cluster-agent RBAC patch missing — re-run setup.sh and check its verification output.
+#
+# Clean up: kubectl --context <ctx> delete -f examples/api-proxy-smoke-test.yaml
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: httpbin-smoke
+  namespace: default
+spec:
+  owner:
+    projectName: default
+  autoDeploy: true
+  componentType:
+    kind: ClusterComponentType
+    name: proxy/api-proxy
+  parameters:
+    upstreamHost: httpbin.org
+    upstreamPort: 443
+    upstreamTLS: true
+    publicBasePath: /httpbin
+    upstreamBasePath: /
+---
+# Placeholder Workload: OpenChoreo requires every Component to own one Workload with an
+# image, even a code-less proxy. The image is never run. The endpoints.default stanza is
+# what makes the console (and ReleaseBinding status) surface the invoke URL — the key
+# MUST be "default" to match the label the api-proxy CT puts on its HTTPRoute.
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: httpbin-smoke-workload
+  namespace: default
+spec:
+  owner:
+    componentName: httpbin-smoke
+    projectName: default
+  container:
+    image: ghcr.io/openchoreo/placeholder:latest
+  endpoints:
+    default:
+      type: HTTP
+      port: 443
+      visibility: [external]

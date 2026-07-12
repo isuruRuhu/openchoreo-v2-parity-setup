@@ -1,0 +1,395 @@
+# V2 "API Proxy" component type.
+# Manages/proxies an EXISTING external API — no source, no build, no container. Uses V3's first-class
+# `workloadType: proxy` (CRD validation forbids workload resources for proxy CTs). The component is
+# created with NO workflow; the upstream is supplied via parameters. Emits the proven kgateway recipe:
+#   Backend(Static) + HTTPRoute(public path → upstream, with URL rewrite) + optional TrafficPolicy(rate limit).
+# Managed-API features — JWT auth, header mediation, and CORS — are first-class parameters (A1):
+#   jwtAuth.enabled  → emits a GatewayExtension(JWT) + TrafficPolicy.jwtAuth.extensionRef
+#   mediation.*      → TrafficPolicy.headerModifiers (request/response set+remove)
+#   cors.enabled     → TrafficPolicy.cors
+# All four policy features (rateLimit + jwtAuth + mediation + cors) share ONE TrafficPolicy on the
+# HTTPRoute; each block is omitted via oc_omit() when its toggle is off. Mirrors F50–F54 exactly.
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterComponentType
+metadata:
+  name: api-proxy
+  annotations:
+    openchoreo.dev/description: "Proxies and manages an existing external API (no code, gateway-only)"
+    # Suppresses the console's auto-generated create card for this CT so only the hand-authored
+    # "Create API Proxy" scaffolder card (backstage/) shows. Inert on stock console images until the
+    # skip-template-generation feature ships upstream — until then users see BOTH cards (harmless).
+    openchoreo.dev/skip-template-generation: "true"
+spec:
+  workloadType: proxy
+
+  # No build: proxies an existing upstream. No allowedWorkflows.
+  allowedWorkflows: []
+  # ADDITIVE cross-CT trait paths for endpoint policies (v2-parity/traits/). The api-proxy CT keeps its
+  # own first-class params (jwtAuth/rateLimit/cors/mediation) for backwards-compat; the traits are the
+  # alternative for parity with other CTs (e.g. `service`/`web-application`, which have no such params).
+  # jwt-auth added 2026-06-02 (A1 re-validation); rate-limit/cors/mediation added 2026-06-04.
+  # Do NOT enable BOTH the CT param AND the matching trait on one component — that emits two
+  # TrafficPolicies setting the same field on one route (use one or the other per feature).
+  allowedTraits:
+    - kind: ClusterTrait
+      name: jwt-auth
+    - kind: ClusterTrait
+      name: rate-limit
+    - kind: ClusterTrait
+      name: cors
+    - kind: ClusterTrait
+      name: mediation
+
+  parameters:
+    openAPIV3Schema:
+      type: object
+      required: [upstreamHost, publicBasePath]
+      properties:
+        upstreamHost:
+          type: string
+          description: "FQDN of the upstream API, e.g. api.example.com"
+        upstreamPort:
+          type: integer
+          default: 443
+        publicBasePath:
+          type: string
+          description: "Public path prefix to expose, e.g. /payments-api"
+          minLength: 1
+          # A6.2 defensive belt: rejects path-illegal chars (incl. any whitespace) at apply time.
+          # Scaffolder trims edge whitespace upstream; values landing here must already be clean.
+          pattern: "^(?:[-A-Za-z0-9/._~!$&'()*+,;=:@]|[%][0-9a-fA-F]{2})+$"
+        upstreamBasePath:
+          type: string
+          default: "/"
+          description: "Path prefix on the upstream that publicBasePath rewrites to"
+          pattern: "^(?:[-A-Za-z0-9/._~!$&'()*+,;=:@]|[%][0-9a-fA-F]{2})+$"
+        upstreamTLS:
+          type: boolean
+          default: true
+          description: "Originate TLS to the upstream (set false for plain-HTTP upstreams). Required for :443 upstreams."
+        rateLimit:
+          type: object
+          default: { enabled: false }
+          properties:
+            enabled: { type: boolean, default: false }
+            maxTokens: { type: integer, default: 100 }
+            tokensPerFill: { type: integer, default: 100 }
+            fillInterval: { type: string, default: "1s" }
+
+        # JWT authentication. When enabled, emits a GatewayExtension(JWT) provider and wires it
+        # onto the TrafficPolicy via jwtAuth.extensionRef. jwksInline MUST have x5c/x5t/x5t#S256
+        # stripped — go-jose (kgateway) rejects Thunder's x5t encoding otherwise (F47).
+        jwtAuth:
+          type: object
+          default: { enabled: false }
+          properties:
+            enabled: { type: boolean, default: false }
+            issuer: { type: string, default: "" }
+            audiences:
+              type: array
+              default: []
+              items: { type: string }
+            jwksInline:
+              type: string
+              default: ""
+              description: "Raw JWKS JSON, x5c/x5t/x5t#S256 stripped (F47)"
+            forwardToken:
+              type: boolean
+              default: false
+              description: "Forward the bearer token upstream (F53 — default false for external proxies)"
+            claimsToHeaders:
+              type: array
+              default: []
+              description: "Map verified JWT claims to upstream request headers"
+              items:
+                type: object
+                required: [name, header]
+                properties:
+                  name: { type: string, description: "JWT claim name, e.g. sub" }
+                  header: { type: string, description: "Header to copy it to, e.g. x-end-user-sub" }
+
+        # Header mediation — set/remove request and response headers (TrafficPolicy.headerModifiers).
+        mediation:
+          type: object
+          default: {}
+          properties:
+            requestHeadersSet:
+              type: array
+              default: []
+              items:
+                type: object
+                required: [name, value]
+                properties:
+                  name: { type: string }
+                  value: { type: string }
+            requestHeadersRemove:
+              type: array
+              default: []
+              items: { type: string }
+            responseHeadersSet:
+              type: array
+              default: []
+              items:
+                type: object
+                required: [name, value]
+                properties:
+                  name: { type: string }
+                  value: { type: string }
+            responseHeadersRemove:
+              type: array
+              default: []
+              items: { type: string }
+
+        # CORS (TrafficPolicy.cors). maxAge is in seconds (integer).
+        cors:
+          type: object
+          default: { enabled: false }
+          properties:
+            enabled: { type: boolean, default: false }
+            allowOrigins:
+              type: array
+              items: { type: string }
+            allowMethods:
+              type: array
+              items: { type: string }
+            allowHeaders:
+              type: array
+              items: { type: string }
+            exposeHeaders:
+              type: array
+              items: { type: string }
+            allowCredentials: { type: boolean, default: false }
+            maxAge: { type: integer, default: 0 }
+
+        # OpenAPI spec carry (A4 — F5). Optional inline OpenAPI 3.x document (YAML or JSON). When set,
+        # the CT emits a ConfigMap `<component>-openapi-spec` labelled `openchoreo.dev/api-spec=true`
+        # for consumer-portal docs discovery (unblocks F105). Static across envs — same API contract
+        # in every environment. Default "" → no ConfigMap, existing proxies unaffected.
+        openapiSpec:
+          type: string
+          default: ""
+          description: "Optional inline OpenAPI 3.x spec (YAML or JSON). Emits a labelled ConfigMap for portal discovery."
+
+  # Per-environment upstream override (A2). `parameters.upstream*` is the production/canonical default;
+  # each ReleaseBinding (componentTypeEnvironmentConfigs) may flip `upstreamOverride.enabled` to repoint
+  # THAT environment at a sandbox backend. Prod leaves it unset → falls back to parameters. The whole
+  # upstream switches atomically on `enabled` (no mixed prod-host/sandbox-port). Maps V2's prod/sandbox split.
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      properties:
+        upstreamOverride:
+          type: object
+          default: { enabled: false }
+          properties:
+            enabled:
+              type: boolean
+              default: false
+              description: "When true, this environment proxies to the sandbox upstream below instead of the production parameters.upstream*"
+            upstreamHost:
+              type: string
+              default: ""
+              description: "Sandbox upstream FQDN for this environment (used only when enabled)"
+            upstreamPort:
+              type: integer
+              default: 443
+            upstreamBasePath:
+              type: string
+              default: "/"
+              # A6.2 defensive belt — same regex as top-level upstreamBasePath.
+              pattern: "^(?:[-A-Za-z0-9/._~!$&'()*+,;=:@]|[%][0-9a-fA-F]{2})+$"
+            upstreamTLS:
+              type: boolean
+              default: true
+
+  resources:
+    - id: backend
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: Backend
+        metadata:
+          name: ${metadata.componentName}-upstream
+          namespace: ${metadata.namespace}
+          labels: ${metadata.labels}
+        spec:
+          type: Static
+          static:
+            hosts:
+              - host: "${environmentConfigs.upstreamOverride.enabled ? environmentConfigs.upstreamOverride.upstreamHost : parameters.upstreamHost}"
+                port: >
+                  ${environmentConfigs.upstreamOverride.enabled ? environmentConfigs.upstreamOverride.upstreamPort : parameters.upstreamPort}
+
+    # TLS origination to HTTPS upstreams. Without this, kgateway connects plaintext to :443
+    # and the proxy fails. Verified-TLS by default (system CA bundle + SNI = upstream host).
+    - id: backend-tls
+      includeWhen: "${environmentConfigs.upstreamOverride.enabled ? environmentConfigs.upstreamOverride.upstreamTLS : parameters.upstreamTLS}"
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: BackendConfigPolicy
+        metadata:
+          name: ${metadata.componentName}-upstream-tls
+          namespace: ${metadata.namespace}
+          labels: ${metadata.labels}
+        spec:
+          targetRefs:
+            - group: gateway.kgateway.dev
+              kind: Backend
+              name: ${metadata.componentName}-upstream
+          tls:
+            sni: "${environmentConfigs.upstreamOverride.enabled ? environmentConfigs.upstreamOverride.upstreamHost : parameters.upstreamHost}"
+            wellKnownCACertificates: System
+
+    - id: httproute
+      template:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        metadata:
+          name: ${metadata.componentName}
+          namespace: ${metadata.namespace}
+          # A6.3 (PROVEN 2026-06-09): stamp endpoint-name + endpoint-visibility so the component
+          # controller's endpoint aggregator picks this HTTPRoute up and writes
+          # ReleaseBinding.status.endpoints[]. This label is LOAD-BEARING — it is the JOIN KEY:
+          # the aggregator iterates Workload.spec.endpoints[<key>] and binds each to the rendered
+          # HTTPRoute labelled openchoreo.dev/endpoint-name=<key>, reading externalURLs.path from
+          # the route's match path (= /${componentName}${publicBasePath}). So A6.3 needs BOTH this
+          # label AND a Workload endpoint whose KEY == "default" (see the F132 placeholder-Workload
+          # recipe). Negative control: a Workload endpoint key != "default" → status.endpoints stays
+          # empty. serviceURL is omitted (no backing Service required — the 2026-05-28 "needs a
+          # Service" theory was disproven). Proxies have exactly one logical endpoint; "default" is it.
+          labels: '${oc_merge(metadata.labels, {"openchoreo.dev/endpoint-name": "default", "openchoreo.dev/endpoint-visibility": "external"})}'
+          annotations: >
+            ${parameters.openapiSpec != ""
+              ? {"openchoreo.dev/openapi-spec-cm": metadata.componentName + "-openapi-spec"}
+              : oc_omit()}
+        spec:
+          parentRefs:
+            - name: ${gateway.ingress.external.name}
+              namespace: ${gateway.ingress.external.namespace}
+          hostnames: |
+            ${[gateway.ingress.external.?http, gateway.ingress.external.?https]
+              .filter(g, g.hasValue()).map(g, g.value().host).distinct()
+              .map(h, metadata.environmentName + "-" + metadata.componentNamespace + "." + h)}
+          rules:
+            - matches:
+                - path:
+                    type: PathPrefix
+                    # F137: prefix the public path with the component name so two api-proxy
+                    # components in one project+env that share a publicBasePath can NOT emit
+                    # identical host+path routes (silent policy bleed). Mirrors the built-in
+                    # `service` CT (/${componentName}-${endpoint}). publicBasePath already starts
+                    # with "/", so this yields e.g. /proxy-demo/demo-api. URLRewrite below is
+                    # UNCHANGED: ReplacePrefixMatch replaces the WHOLE matched prefix, so the
+                    # upstream still receives <upstreamBasePath>/… (customer-visible URL delta).
+                    value: "/${metadata.componentName}${parameters.publicBasePath}"
+              filters:
+                # Always rewrite the upstream Host header to the upstream FQDN.
+                # Without this, envoy forwards the client's Host (e.g. the public
+                # `{env}-{ns}.apps.<dp>.nip.io` hostname) to the upstream, and any
+                # upstream that does vhost-based routing or auth (most managed APIs)
+                # bounces the request to its own login / 404s. Value matches the
+                # Backend's SNI so the host header and TLS handshake agree.
+                - type: URLRewrite
+                  urlRewrite:
+                    hostname: "${environmentConfigs.upstreamOverride.enabled ? environmentConfigs.upstreamOverride.upstreamHost : parameters.upstreamHost}"
+                    path:
+                      type: ReplacePrefixMatch
+                      replacePrefixMatch: "${environmentConfigs.upstreamOverride.enabled ? environmentConfigs.upstreamOverride.upstreamBasePath : parameters.upstreamBasePath}"
+              backendRefs:
+                - group: gateway.kgateway.dev
+                  kind: Backend
+                  name: ${metadata.componentName}-upstream
+
+    # JWT provider. Emitted only when jwtAuth is on; referenced by the TrafficPolicy below.
+    - id: jwt-extension
+      includeWhen: ${parameters.jwtAuth.enabled}
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: GatewayExtension
+        metadata:
+          name: ${metadata.componentName}-jwt
+          namespace: ${metadata.namespace}
+          labels: ${metadata.labels}
+        spec:
+          type: JWT
+          jwt:
+            providers:
+              - name: proxy-jwt
+                issuer: ${parameters.jwtAuth.issuer}
+                audiences: "${has(parameters.jwtAuth.audiences) ? parameters.jwtAuth.audiences : oc_omit()}"
+                forwardToken: ${parameters.jwtAuth.forwardToken}
+                claimsToHeaders: "${has(parameters.jwtAuth.claimsToHeaders) ? parameters.jwtAuth.claimsToHeaders : oc_omit()}"
+                jwks:
+                  local:
+                    inline: ${parameters.jwtAuth.jwksInline}
+
+    # One TrafficPolicy carries every enabled feature; each block is omitted when its toggle is off.
+    # Optional sub-fields are has()-guarded — OpenChoreo applies top-level param defaults but NOT
+    # defaults nested inside a user-provided object, so an absent sub-key would otherwise crash CEL.
+    - id: traffic-policy
+      includeWhen: >
+        ${parameters.rateLimit.enabled || parameters.jwtAuth.enabled || parameters.cors.enabled ||
+          (has(parameters.mediation.requestHeadersSet) && size(parameters.mediation.requestHeadersSet) > 0) ||
+          (has(parameters.mediation.requestHeadersRemove) && size(parameters.mediation.requestHeadersRemove) > 0) ||
+          (has(parameters.mediation.responseHeadersSet) && size(parameters.mediation.responseHeadersSet) > 0) ||
+          (has(parameters.mediation.responseHeadersRemove) && size(parameters.mediation.responseHeadersRemove) > 0)}
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: TrafficPolicy
+        metadata:
+          name: ${metadata.componentName}-policy
+          namespace: ${metadata.namespace}
+          labels: ${metadata.labels}
+        spec:
+          targetRefs:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              name: ${metadata.componentName}
+          jwtAuth: >
+            ${parameters.jwtAuth.enabled
+              ? {"extensionRef": {"name": metadata.componentName + "-jwt"}}
+              : oc_omit()}
+          rateLimit: >
+            ${parameters.rateLimit.enabled
+              ? {"local": {"tokenBucket": {
+                  "maxTokens": parameters.rateLimit.maxTokens,
+                  "tokensPerFill": parameters.rateLimit.tokensPerFill,
+                  "fillInterval": parameters.rateLimit.fillInterval}}}
+              : oc_omit()}
+          headerModifiers: >
+            ${((has(parameters.mediation.requestHeadersSet) && size(parameters.mediation.requestHeadersSet) > 0) ||
+               (has(parameters.mediation.requestHeadersRemove) && size(parameters.mediation.requestHeadersRemove) > 0) ||
+               (has(parameters.mediation.responseHeadersSet) && size(parameters.mediation.responseHeadersSet) > 0) ||
+               (has(parameters.mediation.responseHeadersRemove) && size(parameters.mediation.responseHeadersRemove) > 0))
+              ? {"request": {
+                   "set": has(parameters.mediation.requestHeadersSet) ? parameters.mediation.requestHeadersSet : [],
+                   "remove": has(parameters.mediation.requestHeadersRemove) ? parameters.mediation.requestHeadersRemove : []},
+                 "response": {
+                   "set": has(parameters.mediation.responseHeadersSet) ? parameters.mediation.responseHeadersSet : [],
+                   "remove": has(parameters.mediation.responseHeadersRemove) ? parameters.mediation.responseHeadersRemove : []}}
+              : oc_omit()}
+          cors: >
+            ${parameters.cors.enabled
+              ? {"allowOrigins": has(parameters.cors.allowOrigins) ? parameters.cors.allowOrigins : [],
+                 "allowMethods": has(parameters.cors.allowMethods) ? parameters.cors.allowMethods : [],
+                 "allowHeaders": has(parameters.cors.allowHeaders) ? parameters.cors.allowHeaders : [],
+                 "exposeHeaders": has(parameters.cors.exposeHeaders) && size(parameters.cors.exposeHeaders) > 0 ? parameters.cors.exposeHeaders : oc_omit(),
+                 "allowCredentials": has(parameters.cors.allowCredentials) ? parameters.cors.allowCredentials : false,
+                 "maxAge": has(parameters.cors.maxAge) && parameters.cors.maxAge > 0 ? parameters.cors.maxAge : oc_omit()}
+              : oc_omit()}
+
+    # OpenAPI spec carry (A4 — F5). Emitted only when openapiSpec is non-empty. Discoverable by portal
+    # tooling via label selector `openchoreo.dev/api-spec=true,openchoreo.dev/component=<name>`.
+    - id: openapi-spec
+      includeWhen: "${parameters.openapiSpec != ''}"
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${metadata.componentName}-openapi-spec
+          namespace: ${metadata.namespace}
+          labels: >
+            ${oc_merge(metadata.labels,
+                       {"openchoreo.dev/api-spec": "true",
+                        "openchoreo.dev/component": metadata.componentName})}
+        data:
+          openapi.yaml: ${parameters.openapiSpec}

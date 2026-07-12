@@ -1,0 +1,91 @@
+# mediation ClusterTrait — reusable request/response header mediation for ANY CT's external HTTP endpoints.
+#
+# WHY A TRAIT (not just a CT param): the api-proxy CT carries mediation as a first-class parameter
+# (validated). `service` / `web-application` have no header-mediation surface. This trait lets any
+# HTTP-serving component set/remove request & response headers without re-authoring its CT. The api-proxy
+# CT param stays for backwards-compat; this trait is the cross-CT path. (Trait-split 2026-06-04, mirrors
+# jwt-auth-trait.yaml.)
+#
+# HOW IT TARGETS THE RIGHT ROUTES: emitted TrafficPolicy binds by kgateway `targetSelectors.matchLabels`
+# on `openchoreo.dev/component-uid` + `endpoint-visibility=external`. kgateway MERGES multiple
+# TrafficPolicies on one route (probe 2026-06-04), so this composes with rate-limit/cors/jwt-auth.
+#
+# EMITS (gated on environmentConfigs.enabled): one TrafficPolicy carrying spec.headerModifiers. Requires
+# the A7 cluster-agent RBAC (trafficpolicies). CAVEAT (F52): Envoy re-adds `server: envoy` after the
+# policy, so the `server` response header cannot be removed this way — needs a transformation filter.
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterTrait
+metadata:
+  name: mediation
+  annotations:
+    openchoreo.dev/description: "Request/response header set+remove on a component's external HTTP endpoints (label-selected TrafficPolicy). Reusable across any CT."
+spec:
+  parameters:
+    openAPIV3Schema:
+      type: object
+      properties:
+        requestHeadersSet:
+          type: array
+          default: []
+          items:
+            type: object
+            required: [name, value]
+            properties:
+              name: { type: string }
+              value: { type: string }
+        requestHeadersRemove:
+          type: array
+          default: []
+          items: { type: string }
+        responseHeadersSet:
+          type: array
+          default: []
+          items:
+            type: object
+            required: [name, value]
+            properties:
+              name: { type: string }
+              value: { type: string }
+        responseHeadersRemove:
+          type: array
+          default: []
+          items: { type: string }
+
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: "When false, no mediation policy is emitted in that environment."
+
+  creates:
+    - includeWhen: ${environmentConfigs.enabled}
+      targetPlane: dataplane
+      template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: TrafficPolicy
+        metadata:
+          name: ${metadata.name}-${trait.instanceName}-mediation-policy
+          namespace: ${metadata.namespace}
+          labels:
+            openchoreo.dev/component-uid: ${metadata.componentUID}
+            openchoreo.dev/environment-uid: ${metadata.environmentUID}
+            openchoreo.dev/project-uid: ${metadata.projectUID}
+        spec:
+          targetSelectors:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              matchLabels:
+                openchoreo.dev/component-uid: ${metadata.componentUID}
+                openchoreo.dev/endpoint-visibility: external
+          # All four are top-level array params (default [] always applied) → emit directly. An empty
+          # set/remove array is a no-op for that direction. Mirrors the CT's headerModifiers shape.
+          headerModifiers:
+            request:
+              set: "${parameters.requestHeadersSet}"
+              remove: "${parameters.requestHeadersRemove}"
+            response:
+              set: "${parameters.responseHeadersSet}"
+              remove: "${parameters.responseHeadersRemove}"
