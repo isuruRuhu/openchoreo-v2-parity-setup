@@ -1,4 +1,4 @@
-# APIGateway CR — applied to ns openchoreo-data-plane on choreo-migration-poc-cluster (2026-06-05).
+# APIGateway CR — apply to ns openchoreo-data-plane after installing the gateway-operator.
 # Instructs the WSO2 gateway-operator to deploy the gateway controller + runtime, referencing the
 # api-platform-operator-gateway-values ConfigMap (gateway-configuration.yaml). Bundled SQLite storage.
 apiVersion: gateway.api-platform.wso2.com/v1alpha1

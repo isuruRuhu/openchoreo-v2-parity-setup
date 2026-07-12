@@ -1,8 +1,7 @@
-# WSO2 API Manager 4.7.0 — all-in-one, POC-minimal values
-# Chart: wso2/wso2am-all-in-one 4.7.0-1 (helm.wso2.com)
-# Target: choreo-migration-poc-cluster, namespace wso2-apim
+# WSO2 API Manager 4.7.0 — all-in-one, minimal evaluation values
+# Chart: wso2/wso2am-all-in-one 4.7.0-1 (helm.wso2.com); install into namespace wso2-apim
 #
-# POC simplifications (NOT for production):
+# Evaluation simplifications (NOT for production):
 # - Embedded H2 databases from the public docker.io/wso2/wso2am:4.7.0 image
 #   (no external RDBMS; state is EPHEMERAL — an APIM pod restart resets gateways,
 #   tokens, APIs. Re-run the gateway registration + DCR steps after any restart.)

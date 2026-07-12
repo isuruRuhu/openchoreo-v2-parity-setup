@@ -1,10 +1,10 @@
 # Standalone RBAC for the WSO2 API Platform module — grants the data-plane cluster-agent SA the
 # verbs to create the trait-emitted resources (WSO2 RestApi/APIGateway + kgateway Backend).
 #
-# IMPORTANT (vs A7/F131): this is a STANDALONE ClusterRole + ClusterRoleBinding, NOT a patch of the
+# IMPORTANT: this is a STANDALONE ClusterRole + ClusterRoleBinding, NOT a patch of the
 # cluster-agent's own role `cluster-agent-dataplane-openchoreo-data-plane`. The openchoreo-data-plane
 # Helm chart does not template this object, so it SURVIVES a data-plane `helm upgrade` and will not
-# silently revert (a genuine improvement over the A7 live-patch fragility).
+# silently revert (unlike the bundle's patch of the agent's chart-owned role — see UPGRADE-REPLAY.md).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
