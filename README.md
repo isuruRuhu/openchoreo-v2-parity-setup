@@ -49,8 +49,26 @@ The script is **idempotent** — safe to run repeatedly. Re-running it is also t
 procedure after any `helm upgrade` of the OpenChoreo charts (see
 [UPGRADE-REPLAY.md](UPGRADE-REPLAY.md) for what an upgrade reverts and why).
 
-Use `--dry-run` to preview everything without changing the cluster, and
-`--skip-backstage` if the Backstage console is not installed.
+Flags:
+
+- `--dry-run` — preview every apply/patch without changing the cluster (also skips the
+  RBAC preflight battery, since nothing is mutated).
+- `--skip-backstage` — skip the console pieces (console not installed, or to avoid the
+  deploy-patch console restart on a cluster with live users).
+- `--allow-version-mismatch` — proceed even when the detected OpenChoreo version is not
+  1.1.x. The script reads the control-plane controller image tag and aborts on a mismatch
+  unless this flag is given: the bundle was validated on 1.1.1, 1.0.x schemas are
+  unverified, and 1.2.x is pending revalidation.
+- `--with-autoscaler-trait` — force-install the bundle's `autoscaler` trait even when the
+  cluster already has a stock `horizontal-pod-autoscaler` ClusterTrait. By default the
+  script detects that clash and skips its own autoscaler trait (and its allowed-traits
+  wiring) to avoid two competing HPA traits on the same component types.
+
+Before mutating anything, the script also runs an **RBAC preflight battery**
+(`kubectl auth can-i` for every operation class it performs) and aborts with one
+consolidated "missing grants" list if any are absent — a Rancher cluster-member token is a
+common cause. It further auto-detects the cluster-agent ClusterRole name rather than
+assuming the POC name.
 
 The script ends with a verification block (component types + traits present, and an
 `auth can-i` proof that the data-plane agent can create gateway policies). A non-zero
@@ -122,6 +140,12 @@ ConfigMap, a catalog config that registers it, and a Deployment patch that mount
 The ConfigMaps survive Helm upgrades; the injected startup argument does not (again:
 re-run the script after upgrades).
 
+> **Live-users warning.** The Deployment patch (mounts + the startup arg) changes the
+> Backstage pod spec, so applying it **restarts the console** and briefly drops any active
+> sessions. On a cluster with real users, run this during a maintenance window — or pass
+> `--skip-backstage` to leave the console untouched and apply the console pieces separately
+> later. (On re-runs where nothing changed, the patch is a no-op and does not restart.)
+
 Known caveat: on a stock console image you will see **two** API-proxy create cards — the
 native auto-generated one and this one. The `api-proxy` component type already carries the
 annotation that hides the native card; it takes effect once the console's
@@ -144,10 +168,10 @@ Do them once per cluster:
    ```sh
    bao kv put secret/registry-push-secret username=<user> password=<token> registry=<registry-host>
    ```
-2. **Identity provider (Thunder) admin client** — user import (SCIM2) and client
-   registration need an admin-capable client; none ships by default. Provision one, and
-   extend the `openchoreo-user` schema with a `groups` attribute so role bindings work.
-   See the official identity guide:
+2. **Identity provider (Thunder) admin client** — *(Thunder-based installs only — see the
+   identity note below)* user import (SCIM2) and client registration need an admin-capable
+   client; none ships by default. Provision one, and extend the `openchoreo-user` schema with
+   a `groups` attribute so role bindings work. See the official identity guide:
    <https://openchoreo.dev/docs/platform-engineer-guide/identity-configuration/>.
 3. **Turn console authorization ON** — the default install ships the Backstage config with
    `dangerouslyDisableDefaultAuthPolicy: true`, which disables **all** permission
@@ -156,6 +180,40 @@ Do them once per cluster:
 4. **(Optional) global rate quotas** — the `rate-limit` trait enforces per-route limits.
    If you need V2-style *global* quotas (one shared counter across replicas), additionally
    deploy an Envoy Rate Limit Service and wire it to the gateway.
+
+> **Identity note (Thunder vs Asgardeo).** Items 2 and 3 above are for **Thunder-based**
+> installs (the default local/POC identity provider). **Asgardeo-backed** installs (the
+> enterprise pattern) configure authorization through control-plane Helm values instead —
+> the OIDC issuer plus group→role bootstrap mappings — and **skip** the Thunder admin-client
+> and `groups`-schema steps entirely. Check which IdP your install uses before doing item 2.
+
+## Production secret-store checklist (OpenBao)
+
+OpenChoreo stores secret *values* in an OpenBao (Vault-compatible) store and syncs them
+into the cluster via a `ClusterSecretStore` + External Secrets. The install defaults are
+fine for a quick evaluation but have sharp edges in production — work through this list:
+
+1. **Point the `ClusterSecretStore` at the active node on HA installs.** Set the store's
+   `server` to the `openbao-active` service, **not** the generic `openbao` service. The
+   generic service round-robins across all pods including sealed/unready ones; if it lands
+   on a sealed node, that node halts **all** secret syncing until it is unsealed. The
+   `openbao-active` service always resolves to the current unsealed leader.
+2. **Never set a static `token_reviewer_jwt`.** In the OpenBao Kubernetes auth config,
+   leave `token_reviewer_jwt` **unset**. A static JWT silently expires — we observed a
+   cluster-wide secret-sync outage that began exactly at token expiry, ~6 days after install.
+   With it unset, the vault uses its own auto-refreshing pod service-account token instead.
+   For that to work, bind the vault's ServiceAccount to `system:auth-delegator`
+   (a `ClusterRoleBinding` to the `system:auth-delegator` ClusterRole).
+3. **Alert on seal status.** OpenBao pods self-label `openbao-sealed=true` when sealed. A
+   single sealed node can sit unnoticed for weeks (item 1 keeps the cluster limping). Add an
+   alert on that label / on the `/sys/seal-status` endpoint so a seal event pages someone.
+4. **Enable auto-unseal for production.** Use a cloud KMS or a transit unseal key so pods
+   recover automatically after restart. Keep the unseal/recovery keys under multi-person
+   custody (Shamir split or equivalent), and take **periodic raft snapshots** so the store
+   is recoverable.
+5. **Dev-mode OpenBao loses everything on restart.** The quick-install / dev-mode OpenBao
+   keeps all data **in memory** — every secret value is lost when the pod restarts and must
+   be re-provisioned by hand. Never run dev-mode for anything you cannot trivially rebuild.
 
 ## Step 4 — Smoke test
 
@@ -207,3 +265,9 @@ RBAC) used to connect OpenChoreo with WSO2 API Manager for consumer-facing API p
 features. It has its own [README](community-modules/gateway-wso2-api-platform/README.md)
 and install steps. Treat it as opt-in: the validated setup was evaluation-grade
 (development mode enabled, ephemeral in-memory database) and needs production hardening.
+
+> **Check before installing.** Some enterprise clusters ship with the WSO2 api-platform
+> gateway module **already installed**. Before applying anything in that directory, check
+> for existing `APIGateway` custom resources (`kubectl get apigateways -A`) or an `amp`
+> Helm release (`helm list -A | grep -i amp`). If either is present, **skip this directory
+> entirely** — installing over an existing module will collide with it.
