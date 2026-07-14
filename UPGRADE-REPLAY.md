@@ -32,14 +32,17 @@ Everything this repo installs falls into one of two classes:
 The failure mode of the ClusterRole revert deserves emphasis: nothing errors visibly.
 Components that emit gateway policies (API proxies, anything with jwt-auth/rate-limit/
 cors/mediation) just stop routing — a curl returns 404 and no controller reports why.
-**After any `helm upgrade`, re-run setup.sh, or at minimum check:**
+**After any `helm upgrade`, re-run setup.sh, or at minimum check that the cluster-agent
+ClusterRole still grants the kgateway policy resources:**
 
 ```sh
-kubectl --context <ctx> auth can-i create trafficpolicies.gateway.kgateway.dev \
-  --as=system:serviceaccount:openchoreo-data-plane:cluster-agent-dataplane
+kubectl --context <ctx> get clusterrole <cluster-agent-role> -o json \
+  | grep -q backendconfigpolicies && echo "rule present" || echo "REVERTED — re-run setup.sh"
 ```
 
-(`setup.sh` runs this exact check in its verification step.)
+(`setup.sh` reads the ClusterRole rules directly in its verification step — impersonation
+via `auth can-i --as=...` is frequently denied, so it is only an optional warn-only probe.
+The script also auto-discovers the cluster-agent role name.)
 
 ## When these patches become unnecessary (upstream tracking)
 
@@ -55,3 +58,15 @@ Before applying this repo on a new OpenChoreo version, check whether it already 
 | Hand-authored API Proxy create card | console shipping a native proxy-aware card (plus the skip-template-generation annotation support that hides duplicates) |
 
 Once an item ships upstream, drop the corresponding step rather than fighting the chart.
+
+## Version drift
+
+This bundle was validated on **1.1.1**. `setup.sh` now reads the control-plane controller
+image tag and refuses to run on a non-1.1.x version unless you pass
+`--allow-version-mismatch`. Before applying on any newer release, **consult the upstream
+tracking table above** to see which interim patches the product has absorbed:
+
+- On **1.1.2+**, review the patches for behavioural drift first — e.g. 1.1.2 moved the
+  cluster-gateway internal routes to a new port, which can affect gateway-adjacent wiring.
+- Before **1.2.x**, the bundle must be **revalidated** end-to-end; treat
+  `--allow-version-mismatch` on a 1.2.x cluster as "I accept this is unverified."

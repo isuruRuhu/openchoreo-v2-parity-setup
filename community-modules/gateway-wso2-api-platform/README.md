@@ -22,6 +22,19 @@ component's `HTTPRoute` (backendRef → the Backend; urlRewrite → the derived 
 For the full upstream documentation of the module itself, see
 [upstream-README.md](upstream-README.md).
 
+> **Check before installing — it may already be here.** Some enterprise clusters ship with
+> the WSO2 api-platform gateway module pre-installed. Before running any of the install
+> steps below, check the target cluster:
+>
+> ```bash
+> kubectl --context <ctx> get apigateways -A      # existing APIGateway CRs?
+> helm --kube-context <ctx> list -A | grep -i amp # existing 'amp' helm release?
+> ```
+>
+> If either shows a result, the module is already installed — **skip this directory
+> entirely** and use the existing install. Re-installing over it will collide (duplicate
+> operator, CRDs, gateway CRs).
+
 ## How it relates to the traits in this bundle
 
 This is a **second, heavier API-management path** that **coexists** with — does not replace — the
