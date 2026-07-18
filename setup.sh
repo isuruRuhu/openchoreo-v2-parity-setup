@@ -209,10 +209,10 @@ log "Applying custom ComponentTypes (api-proxy, manual-task, mcp-server)"
 "${KC[@]}" apply "${APPLY_FLAGS[@]}" -f "$SCRIPT_DIR/component-types/"
 
 if $INSTALL_AUTOSCALER_TRAIT; then
-  log "Applying ClusterTraits (jwt-auth, rate-limit, cors, mediation, autoscaler)"
+  log "Applying ClusterTraits (jwt-auth, rate-limit, cors, mediation, autoscaler, volume-mount)"
   "${KC[@]}" apply "${APPLY_FLAGS[@]}" -f "$SCRIPT_DIR/traits/"
 else
-  log "Applying ClusterTraits (jwt-auth, rate-limit, cors, mediation — autoscaler skipped)"
+  log "Applying ClusterTraits (jwt-auth, rate-limit, cors, mediation, volume-mount — autoscaler skipped)"
   # Apply each trait file individually, omitting the autoscaler trait (clash guard).
   for f in "$SCRIPT_DIR"/traits/*.yaml; do
     case "$f" in
@@ -289,6 +289,10 @@ else
   ensure_allowed_traits web-application rate-limit cors mediation
   note "worker: autoscaler trait skipped — no parity traits to add"
 fi
+# volume/file-mount traits (AX2) — unconditional: no clash guard, core resources only.
+ensure_allowed_traits service         emptydir-volume file-mount persistent-volume
+ensure_allowed_traits web-application emptydir-volume file-mount persistent-volume
+ensure_allowed_traits worker          emptydir-volume file-mount persistent-volume
 ensure_allowed_traits scheduled-task  observability-alert-rule
 
 log "Hardening scheduled-task input validation (enums + cron pattern)"

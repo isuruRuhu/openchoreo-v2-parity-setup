@@ -109,6 +109,9 @@ or in the Component spec, with per-environment on/off control.
 | `cors` | Cross-origin request policy (origins, methods, headers) | service, api-proxy, web-application |
 | `mediation` | Add/remove request and response headers at the gateway | service, api-proxy, web-application |
 | `autoscaler` | Horizontal pod autoscaling with per-environment min/max replicas and CPU/memory targets | service, web-application, worker |
+| `emptydir-volume` | Attach an ephemeral scratch volume + mount (per-environment sizeLimit/medium) | service, web-application, worker |
+| `file-mount` | Mount a config file into the container — materialize content into a ConfigMap, or mount an existing Secret | service, web-application, worker |
+| `persistent-volume` | Attach a durable PersistentVolumeClaim + mount (per-environment size/class/access mode); requires a working CSI | service, web-application, worker |
 
 Note: `api-proxy` also has its own built-in parameters for JWT/rate-limit/CORS/mediation.
 Use **either** the built-in parameter **or** the matching trait on one component, never both
