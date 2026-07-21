@@ -294,6 +294,12 @@ ensure_allowed_traits service         emptydir-volume file-mount persistent-volu
 ensure_allowed_traits web-application emptydir-volume file-mount persistent-volume
 ensure_allowed_traits worker          emptydir-volume file-mount persistent-volume
 ensure_allowed_traits scheduled-task  observability-alert-rule
+# image-pull-secret traits — unconditional (inert until registry-pull/ CES is set up).
+# manual-task gets image-pull-secret-cronjob baked into its CT yaml (repo-owned CT).
+ensure_allowed_traits service         image-pull-secret
+ensure_allowed_traits web-application image-pull-secret
+ensure_allowed_traits worker          image-pull-secret
+ensure_allowed_traits scheduled-task  image-pull-secret-cronjob
 
 log "Hardening scheduled-task input validation (enums + cron pattern)"
 "${KC[@]}" patch clustercomponenttype scheduled-task --type=merge \
@@ -356,7 +362,7 @@ for ct in api-proxy manual-task mcp-server; do
   "${KC[@]}" get clustercomponenttype "$ct" >/dev/null 2>&1 \
     && note "OK  ComponentType $ct" || { note "MISSING ComponentType $ct"; FAIL=1; }
 done
-PARITY_TRAITS="jwt-auth rate-limit cors mediation"
+PARITY_TRAITS="jwt-auth rate-limit cors mediation image-pull-secret image-pull-secret-cronjob"
 if $INSTALL_AUTOSCALER_TRAIT; then PARITY_TRAITS="$PARITY_TRAITS autoscaler"; fi
 for tr in $PARITY_TRAITS; do
   "${KC[@]}" get clustertrait "$tr" >/dev/null 2>&1 \

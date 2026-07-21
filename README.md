@@ -112,6 +112,12 @@ or in the Component spec, with per-environment on/off control.
 | `emptydir-volume` | Attach an ephemeral scratch volume + mount (per-environment sizeLimit/medium) | service, web-application, worker |
 | `file-mount` | Mount a config file into the container — materialize content into a ConfigMap, or mount an existing Secret | service, web-application, worker |
 | `persistent-volume` | Attach a durable PersistentVolumeClaim + mount (per-environment size/class/access mode); requires a working CSI | service, web-application, worker |
+| `image-pull-secret` | Add an `imagePullSecrets` entry to the Deployment pod spec for private-registry BYOI images (OpenChoreo has no native support) | service, web-application, worker |
+| `image-pull-secret-cronjob` | Same, for CronJob-rendering types | scheduled-task, manual-task |
+
+The pull-secret traits only name the Secret — the companion `registry-pull/` dir delivers it to
+every cell namespace via a ClusterExternalSecret (manual step, needs an OpenBao-seeded credential;
+see `registry-pull/README.md` and the Step-3 checklist).
 
 Note: `api-proxy` also has its own built-in parameters for JWT/rate-limit/CORS/mediation.
 Use **either** the built-in parameter **or** the matching trait on one component, never both
@@ -183,6 +189,11 @@ Do them once per cluster:
 4. **(Optional) global rate quotas** — the `rate-limit` trait enforces per-route limits.
    If you need V2-style *global* quotas (one shared counter across replicas), additionally
    deploy an Envoy Rate Limit Service and wire it to the gateway.
+5. **(Optional) private-registry pull secret** — if components deploy BYOI images from a
+   private registry, seed the registry credential into OpenBao and apply the
+   ClusterExternalSecret in `registry-pull/` (delivers a dockerconfigjson Secret to every
+   cell namespace; the `image-pull-secret` traits reference it). Full steps:
+   `registry-pull/README.md`.
 
 > **Identity note (Thunder vs Asgardeo).** Items 2 and 3 above are for **Thunder-based**
 > installs (the default local/POC identity provider). **Asgardeo-backed** installs (the

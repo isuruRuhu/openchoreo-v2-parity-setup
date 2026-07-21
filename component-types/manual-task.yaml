@@ -25,7 +25,9 @@ spec:
     - kind: ClusterWorkflow
       name: ballerina-buildpack-builder
 
-  allowedTraits: []
+  allowedTraits:
+    - kind: ClusterTrait
+      name: image-pull-secret-cronjob
 
   validations:
     - rule: "${size(workload.endpoints) == 0}"
