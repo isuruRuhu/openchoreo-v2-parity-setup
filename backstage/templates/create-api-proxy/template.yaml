@@ -1,0 +1,145 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: create-api-proxy
+  title: API Proxy
+  # Card description must stay a one-liner (matches the native CT cards, which surface the CT's
+  # openchoreo.dev/description annotation). Implementation notes (F132 placeholder Workload,
+  # F138 invoke URL, flow shape) live in changelogs/A6-apiproxy-scaffolder.md \u2014 not here.
+  description: "Proxies and manages an existing external API (no code, gateway-only)"
+  tags:
+  - openchoreo
+  - component
+  - api-proxy
+  - v2-parity
+spec:
+  owner: openchoreo-users
+  type: Component
+  EXPERIMENTAL_formDecorators:
+  - id: openchoreo:inject-user-token
+  parameters:
+  - title: Component Metadata
+    required:
+    - project_namespace
+    - component_name
+    properties:
+      project_namespace:
+        title: Project & Namespace
+        type: object
+        ui:field: ProjectNamespaceField
+        ui:options:
+          defaultNamespace: ''
+        properties:
+          project_name:
+            type: string
+          namespace_name:
+            type: string
+        required:
+        - project_name
+        - namespace_name
+      component_name:
+        title: Component Name
+        type: string
+        description: Unique name for your component
+        ui:field: ComponentNamePicker
+      displayName:
+        title: Display Name
+        type: string
+        description: Human-readable display name
+      description:
+        title: Description
+        type: string
+        description: Brief description of what this component does
+  - title: API Proxy Details
+    properties:
+      workloadDetails:
+        title: Workload Details
+        type: object
+        ui:field: WorkloadDetailsField
+        ui:options:
+          namespaceName: ''
+          workloadType: proxy
+          ctdSchema:
+            properties:
+              openapiSpec:
+                default: ''
+                description: Optional inline OpenAPI 3.x spec (YAML or JSON). Emits a labelled ConfigMap
+                  for portal discovery.
+                type: string
+              publicBasePath:
+                description: Public path prefix to expose, e.g. /payments-api
+                minLength: 1
+                pattern: ^(?:[-A-Za-z0-9/._~!$&'()*+,;=:@]|[%][0-9a-fA-F]{2})+$
+                type: string
+              upstreamBasePath:
+                default: /
+                description: Path prefix on the upstream that publicBasePath rewrites to
+                pattern: ^(?:[-A-Za-z0-9/._~!$&'()*+,;=:@]|[%][0-9a-fA-F]{2})+$
+                type: string
+              upstreamHost:
+                description: FQDN of the upstream API, e.g. api.example.com
+                type: string
+              upstreamPort:
+                default: 443
+                type: integer
+              upstreamTLS:
+                default: true
+                description: Originate TLS to the upstream (set false for plain-HTTP upstreams). Required
+                  for :443 upstreams.
+                type: boolean
+            required:
+            - upstreamHost
+            - publicBasePath
+            type: object
+          ctdDisplayName: API Proxy
+          allowedTraits:
+          - kind: ClusterTrait
+            name: jwt-auth
+          - kind: ClusterTrait
+            name: rate-limit
+          - kind: ClusterTrait
+            name: cors
+          - kind: ClusterTrait
+            name: mediation
+  steps:
+  - id: create-component
+    name: Create API Proxy component
+    action: openchoreo:component:create
+    input:
+      namespaceName: ${{ parameters.project_namespace.namespace_name }}
+      projectName: ${{ parameters.project_namespace.project_name }}
+      componentName: ${{ parameters.component_name }}
+      displayName: ${{ parameters.displayName }}
+      description: ${{ parameters.description }}
+      componentType: api-proxy
+      component_type_kind: ClusterComponentType
+      component_type_workload_type: proxy
+      deploymentSource: deploy-from-image
+      containerImage: ghcr.io/openchoreo/placeholder:latest
+      autoDeploy: true
+      workloadDetails:
+        ctdParameters: ${{ parameters.workloadDetails.ctdParameters }}
+        traits: ${{ parameters.workloadDetails.traits }}
+        endpoints:
+          default:
+            type: HTTP
+            port: 443
+            visibility:
+            - external
+  output:
+    links:
+    - title: View Component
+      icon: kind:component
+      entityRef: component:${{ steps['create-component'].output.namespaceName }}/${{ steps['create-component'].output.componentName
+        }}
+    text:
+    - title: API Proxy created
+      content: 'API Proxy **${{ steps[''create-component''].output.componentName }}** created in project
+        **${{ steps[''create-component''].output.projectName }}**.
+
+
+        - Gateway resources (Backend, HTTPRoute, policies from traits/params) are emitted by the api-proxy
+        ClusterComponentType on the next ReleaseBinding reconcile.
+
+        - For a per-environment sandbox upstream override, edit the ReleaseBinding''s `componentTypeEnvironmentConfigs.upstreamOverride`
+        (A2).'
